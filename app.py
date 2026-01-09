@@ -1,28 +1,51 @@
 import streamlit as st
-import ccxt
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 from scipy.signal import argrelextrema
 import plotly.graph_objects as go
 from openai import OpenAI
+import requests
+import time
 
-# 1. 데이터 수집 (에러 핸들링 추가)
+# 1. 데이터 수집 (CoinGecko API 사용 - 지역 제한 없음)
 @st.cache_data(ttl=600) # 10분마다 캐시 갱신
-def get_crypto_data(symbol='BTC/USDT', timeframe='1d', limit=2000):
+def get_crypto_data(symbol='bitcoin', timeframe='1d', limit=365):
     try:
-        # 연결 시간 초과 설정을 추가하여 안정성 확보
-        exchange = ccxt.binance({
-            'timeout': 30000,
-            'enableRateLimit': True,
-        })
-        ohlcv = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
-        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        # CoinGecko API 사용 (무료, 지역 제한 없음)
+        coin_id = 'bitcoin' if symbol == 'BTC/USDT' else 'ethereum'
+        
+        # 과거 데이터 조회 (마켓 차트)
+        url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
+        params = {
+            'vs_currency': 'usd',
+            'days': limit,
+            'interval': 'daily'
+        }
+        
+        response = requests.get(url, params=params, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        
+        # 데이터 변환
+        prices = data.get('prices', [])
+        if not prices:
+            st.error("⚠️ 데이터를 가져올 수 없습니다.")
+            return pd.DataFrame()
+        
+        df = pd.DataFrame(prices, columns=['timestamp', 'close'])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-        return df
+        
+        # OHLCV 근사값 생성 (일일 데이터의 경우)
+        df['open'] = df['close'].shift(1).fillna(df['close'].iloc[0])
+        df['high'] = df[['open', 'close']].max(axis=1)
+        df['low'] = df[['open', 'close']].min(axis=1)
+        df['volume'] = 0  # CoinGecko에서 직접 제공하지 않으므로 0으로 설정
+        
+        return df[['timestamp', 'open', 'high', 'low', 'close', 'volume']]
+        
     except Exception as e:
-        # 거래소 연결 실패 시 에러를 던져 화면에 표시
-        st.error(f"⚠️ 거래소 데이터를 가져오는데 실패했습니다: {e}")
+        st.error(f"⚠️ 데이터를 가져오는데 실패했습니다: {e}")
         return pd.DataFrame()
 
 # 2. 변곡점 탐지 엔진
